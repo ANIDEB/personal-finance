@@ -223,7 +223,7 @@ with tab_crypto:
             return ""
 
         st.dataframe(
-            df_crypto[["Coin", "Price (USD)", "24h Change"]].style.applymap(
+            df_crypto[["Coin", "Price (USD)", "24h Change"]].style.map(
                 style_change, subset=["24h Change"]
             ),
             hide_index=True,

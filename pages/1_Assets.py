@@ -444,7 +444,7 @@ with tab_investment:
                         ]
                         styled = (
                             pd.DataFrame(h_rows)[display_cols]
-                            .style.applymap(_style_gl, subset=["Gain / Loss"])
+                            .style.map(_style_gl, subset=["Gain / Loss"])
                         )
                         st.dataframe(styled, hide_index=True, use_container_width=True)
 
