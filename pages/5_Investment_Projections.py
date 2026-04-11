@@ -1,14 +1,13 @@
 """
-Investment Projections page — visualise how each holding and account
-is expected to grow over time based on annual growth rate, dividends,
-and reinvestment settings entered on the Assets page.
+Investment Projections page — projects each holding to retirement date,
+showing Dec 31 balance for every calendar year.
 """
 
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
-import numpy as np
+from datetime import date, timedelta
 
 import sys
 import os
@@ -30,7 +29,7 @@ FREQ_TO_PAYMENTS = {
     "Annual": 1,
 }
 
-MILESTONE_YEARS = [1, 3, 5, 10, 15, 20, 30]
+MILESTONE_YEARS = [1, 3, 5, 10, 15, 20, 25, 30]
 
 
 # ── Market data (cached 10 min) ───────────────────────────────────────────────
@@ -45,82 +44,49 @@ def cached_crypto_prices(ids_tuple):
     return md.fetch_crypto_prices(list(ids_tuple))
 
 
-# ── Projection engine ─────────────────────────────────────────────────────────
-
-def current_holding_value(h, stock_prices, crypto_prices):
-    """Return best available current value for a holding."""
-    ticker = h["ticker"].upper()
-    qty = h.get("quantity") or 0
-    price = None
-
-    if h["asset_type"] in ("Stock/ETF", "Mutual Fund"):
-        price = stock_prices.get(ticker, {}).get("price")
-    elif h["asset_type"] == "Crypto":
-        coin_id = md.CRYPTO_ID_MAP.get(ticker, ticker.lower())
-        price = crypto_prices.get(coin_id, {}).get("price_usd")
-
-    if price and qty:
-        return price * qty, price
-    # Fallback: cost basis
-    if h.get("cost_basis") and qty:
-        return h["cost_basis"] * qty, h["cost_basis"]
-    return 0.0, price
-
-
-def project_holding(h, current_value, live_price, years):
-    """
-    Return a list of dicts {year, value, annual_dividend_income}
-    for years 0..years.
-
-    If reinvest_dividends:  dividend yield is added to the growth rate
-                            (DRIP — dividends compound with the principal)
-    If not reinvest:        principal grows at growth_rate only;
-                            dividend income is reported separately each year
-    """
-    growth_rate = (h.get("annual_growth_rate") or 0) / 100
-    div_per_unit = h.get("dividend_per_unit") or 0
-    payments_per_year = FREQ_TO_PAYMENTS.get(h.get("dividend_frequency", "Annual"), 0)
-    annual_div_per_unit = div_per_unit * payments_per_year
-    reinvest = bool(h.get("reinvest_dividends", False))
-    qty = h.get("quantity") or 0
-
-    # Dividend yield relative to current price (used for DRIP compounding)
-    if live_price and live_price > 0 and annual_div_per_unit > 0:
-        div_yield = annual_div_per_unit / live_price
-    else:
-        div_yield = 0.0
-
-    rows = []
-    value = current_value
-
-    for year in range(years + 1):
-        if reinvest:
-            annual_div_income = 0.0       # reinvested, not paid out as cash
-        else:
-            annual_div_income = qty * annual_div_per_unit
-
-        rows.append({
-            "year": year,
-            "value": round(value, 2),
-            "annual_dividend_income": round(annual_div_income, 2),
-        })
-
-        # Grow for next year
-        if reinvest:
-            value *= (1 + growth_rate + div_yield)
-        else:
-            value *= (1 + growth_rate)
-
-    return rows
-
-
-# ── Page ─────────────────────────────────────────────────────────────────────
+# ── Retirement date setting ───────────────────────────────────────────────────
 
 st.title("🔭 Investment Projections")
+
+with st.expander("⚙️ Retirement Settings", expanded=False):
+    saved_str = db.get_setting("retirement_date")
+    saved_date = date.fromisoformat(saved_str) if saved_str else None
+
+    with st.form("retirement_form"):
+        ret_date_input = st.date_input(
+            "Projected Retirement Date",
+            value=saved_date or date(date.today().year + 25, 1, 1),
+            min_value=date.today() + timedelta(days=1),
+        )
+        if st.form_submit_button("Save Retirement Date", type="primary"):
+            db.set_setting("retirement_date", ret_date_input.isoformat())
+            st.success(f"Retirement date saved: {ret_date_input.strftime('%B %d, %Y')}")
+            st.rerun()
+
+# Reload after possible save
+retirement_str = db.get_setting("retirement_date")
+if not retirement_str:
+    st.warning("Set your **Projected Retirement Date** in the settings above to see projections.")
+    st.stop()
+
+retirement_date = date.fromisoformat(retirement_str)
+today = date.today()
+
+if retirement_date <= today:
+    st.error("Retirement date must be in the future. Please update it above.")
+    st.stop()
+
+# Calendar years from current year to retirement year (inclusive)
+current_year = today.year
+retirement_year = retirement_date.year
+cal_years = list(range(current_year, retirement_year + 1))
+years_to_retirement = retirement_year - current_year
+
+years_left = (retirement_date - today).days / 365.25
 st.caption(
-    "Projections are based on the annual growth rate, dividend settings, "
-    "and reinvestment indicator you entered for each position. "
-    "They are illustrative — not financial advice."
+    f"Projecting to **{retirement_date.strftime('%B %d, %Y')}** "
+    f"— {years_left:.1f} years away. "
+    f"Balances shown as of **Dec 31** each calendar year."
 )
 
 # ── Load data ─────────────────────────────────────────────────────────────────
@@ -130,7 +96,7 @@ all_holdings = db.get_all_holdings()
 
 if not accounts or not all_holdings:
     st.info(
-        "No investment accounts or positions found. "
+        "No investment positions found. "
         "Go to **Assets → Investment Accounts** to add accounts and positions."
     )
     st.stop()
@@ -148,49 +114,121 @@ with st.spinner("Fetching live prices..."):
     stock_prices = cached_stock_prices(stock_tickers) if stock_tickers else {}
     crypto_prices = cached_crypto_prices(crypto_ids) if crypto_ids else {}
 
-# ── Controls ──────────────────────────────────────────────────────────────────
-
-ctrl1, ctrl2 = st.columns([1, 2])
-with ctrl1:
-    horizon = st.slider("Projection Horizon (years)", min_value=5, max_value=30,
-                        value=20, step=5)
-
-# Build account lookup
 account_map = {a["id"]: a for a in accounts}
 
-# ── Compute projections for every holding ─────────────────────────────────────
 
-all_projections = []   # flat list of per-holding year rows
+# ── Projection helpers ────────────────────────────────────────────────────────
+
+def current_holding_value(h):
+    ticker = h["ticker"].upper()
+    qty = h.get("quantity") or 0
+    price = None
+    if h["asset_type"] in ("Stock/ETF", "Mutual Fund"):
+        price = stock_prices.get(ticker, {}).get("price")
+    elif h["asset_type"] == "Crypto":
+        coin_id = md.CRYPTO_ID_MAP.get(ticker, ticker.lower())
+        price = crypto_prices.get(coin_id, {}).get("price_usd")
+    if price and qty:
+        return price * qty, price
+    if h.get("cost_basis") and qty:
+        return h["cost_basis"] * qty, h["cost_basis"]
+    return 0.0, price
+
+
+def project_by_calendar_year(h, current_value, live_price, cal_years):
+    """
+    Return a list of {cal_year, dec31_value, annual_dividend_income}
+    for each calendar year in cal_years.
+
+    The first year uses a partial-year fraction (months remaining / 12).
+    Subsequent years are full-year growth.
+    """
+    growth_rate = (h.get("annual_growth_rate") or 0) / 100
+    div_per_unit = h.get("dividend_per_unit") or 0
+    payments_per_year = FREQ_TO_PAYMENTS.get(h.get("dividend_frequency", "Annual"), 0)
+    annual_div_per_unit = div_per_unit * payments_per_year
+    reinvest = bool(h.get("reinvest_dividends", False))
+    qty = h.get("quantity") or 0
+
+    div_yield = (annual_div_per_unit / live_price) if (live_price and live_price > 0 and annual_div_per_unit > 0) else 0.0
+    effective_rate = growth_rate + (div_yield if reinvest else 0)
+
+    rows = []
+    value = current_value
+
+    for i, yr in enumerate(cal_years):
+        if i == 0:
+            # Partial year: days from today to Dec 31 of current year
+            dec31 = date(yr, 12, 31)
+            fraction = (dec31 - today).days / 365.25
+        else:
+            fraction = 1.0
+
+        value = value * ((1 + effective_rate) ** fraction)
+        annual_div_income = 0.0 if reinvest else (qty * annual_div_per_unit * fraction)
+
+        rows.append({
+            "cal_year": yr,
+            "dec31_value": round(value, 2),
+            "annual_dividend_income": round(annual_div_income, 2),
+        })
+
+    return rows
+
+
+# ── Build full projection dataset ─────────────────────────────────────────────
+
+all_proj_rows = []
 
 for h in all_holdings:
-    val, price = current_holding_value(h, stock_prices, crypto_prices)
+    val, price = current_holding_value(h)
     if val <= 0:
         continue
     acct = account_map.get(h["account_id"], {})
-    rows = project_holding(h, val, price, horizon)
-    for r in rows:
-        all_projections.append({
-            "year": r["year"],
-            "value": r["value"],
+    proj = project_by_calendar_year(h, val, price, cal_years)
+    for r in proj:
+        all_proj_rows.append({
+            "cal_year": r["cal_year"],
+            "dec31_value": r["dec31_value"],
             "annual_dividend_income": r["annual_dividend_income"],
             "ticker": h["ticker"],
             "asset_type": h["asset_type"],
             "account_id": h["account_id"],
             "account_name": acct.get("name", "Unknown"),
             "account_type": acct.get("account_type", ""),
-            "institution": acct.get("institution", ""),
             "growth_rate": h.get("annual_growth_rate") or 0,
             "reinvest": bool(h.get("reinvest_dividends", False)),
         })
 
-if not all_projections:
-    st.warning(
-        "No projectable holdings found. "
-        "Make sure your positions have a live price or cost basis set."
-    )
+# Prepend today's snapshot (year 0 = now)
+today_rows = []
+for h in all_holdings:
+    val, price = current_holding_value(h)
+    if val <= 0:
+        continue
+    acct = account_map.get(h["account_id"], {})
+    today_rows.append({
+        "cal_year": f"Today ({today.strftime('%b %d, %Y')})",
+        "dec31_value": val,
+        "annual_dividend_income": 0.0,
+        "ticker": h["ticker"],
+        "asset_type": h["asset_type"],
+        "account_id": h["account_id"],
+        "account_name": acct.get("name", "Unknown"),
+        "account_type": acct.get("account_type", ""),
+        "growth_rate": h.get("annual_growth_rate") or 0,
+        "reinvest": bool(h.get("reinvest_dividends", False)),
+    })
+
+if not all_proj_rows:
+    st.warning("No projectable positions found. Ensure positions have a live price or cost basis.")
     st.stop()
 
-df_all = pd.DataFrame(all_projections)
+df_all = pd.DataFrame(all_proj_rows)
+
+# Current total
+current_total = sum(r["dec31_value"] for r in today_rows)
+
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
@@ -204,62 +242,85 @@ tab_portfolio, tab_accounts, tab_detail = st.tabs([
 # ════════════════════════════════════════════════════════════════════════════
 
 with tab_portfolio:
-    # Total projected value per year
-    df_total = df_all.groupby("year")["value"].sum().reset_index()
-    df_total.columns = ["Year", "Total Portfolio Value"]
+    df_total = (
+        df_all.groupby("cal_year")["dec31_value"]
+        .sum()
+        .reset_index()
+        .rename(columns={"cal_year": "Year", "dec31_value": "Portfolio Value"})
+    )
 
-    # KPIs at milestone years
-    today_val = df_total.loc[df_total["Year"] == 0, "Total Portfolio Value"].values[0]
-    st.metric("Current Portfolio Value", f"${today_val:,.0f}")
+    # Retirement year value
+    ret_row = df_total[df_total["Year"] == retirement_year]
+    ret_value = ret_row["Portfolio Value"].values[0] if not ret_row.empty else None
 
-    kpi_cols = st.columns(len([y for y in MILESTONE_YEARS if y <= horizon]))
-    for col, yr in zip(kpi_cols, [y for y in MILESTONE_YEARS if y <= horizon]):
-        row = df_total[df_total["Year"] == yr]
-        if not row.empty:
-            proj_val = row["Total Portfolio Value"].values[0]
-            gain = proj_val - today_val
-            col.metric(
-                f"Year {yr}",
-                f"${proj_val:,.0f}",
-                delta=f"+${gain:,.0f}",
-            )
+    # KPI row
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Current Portfolio", f"${current_total:,.0f}")
+    if ret_value:
+        k2.metric(
+            f"At Retirement ({retirement_year})",
+            f"${ret_value:,.0f}",
+            delta=f"+${ret_value - current_total:,.0f}",
+        )
+    k3.metric("Years to Retirement", f"{years_left:.1f}")
+
+    # Milestone KPIs
+    milestone_cols = [
+        (yr, current_year + yr)
+        for yr in MILESTONE_YEARS
+        if current_year + yr <= retirement_year
+    ]
+    if milestone_cols:
+        cols = st.columns(len(milestone_cols))
+        for col, (offset, cal_yr) in zip(cols, milestone_cols):
+            row = df_total[df_total["Year"] == cal_yr]
+            if not row.empty:
+                v = row["Portfolio Value"].values[0]
+                col.metric(f"{cal_yr}", f"${v:,.0f}", delta=f"+${v - current_total:,.0f}")
 
     st.divider()
 
-    # Area chart — total portfolio over time
-    fig = px.area(
-        df_total,
-        x="Year",
-        y="Total Portfolio Value",
-        labels={"Total Portfolio Value": "Projected Value ($)"},
-        color_discrete_sequence=["#3498db"],
-    )
-    fig.update_traces(
-        line=dict(width=2),
+    # Area chart
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df_total["Year"].astype(str),
+        y=df_total["Portfolio Value"],
+        fill="tozeroy",
+        line=dict(color="#3498db", width=2.5),
         fillcolor="rgba(52,152,219,0.15)",
-    )
+        name="Portfolio Value",
+        hovertemplate="Dec 31, %{x}<br>$%{y:,.0f}<extra></extra>",
+    ))
+    # Retirement marker
+    if ret_value:
+        fig.add_vline(
+            x=str(retirement_year),
+            line_dash="dash",
+            line_color="#e74c3c",
+            annotation_text=f"Retirement {retirement_year}",
+            annotation_position="top right",
+        )
     fig.update_layout(
-        height=380,
+        height=400,
         margin=dict(t=20, b=20),
         yaxis_tickprefix="$",
         yaxis_tickformat=",.0f",
-        xaxis_title="Years from Today",
+        xaxis_title="Calendar Year (Dec 31 balance)",
+        yaxis_title="Portfolio Value ($)",
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Annual dividend income (non-reinvested only)
-    df_div = df_all.groupby("year")["annual_dividend_income"].sum().reset_index()
-    df_div.columns = ["Year", "Annual Dividend Income"]
-    total_annual_div = df_div[df_div["Year"] == 1]["Annual Dividend Income"].values
-    if total_annual_div.size and total_annual_div[0] > 0:
-        st.subheader("Annual Dividend Income (Cash Paid Out)")
-        st.caption("Only includes dividends from positions where DRIP is OFF.")
+    # Dividend income bar chart
+    df_div = df_all.groupby("cal_year")["annual_dividend_income"].sum().reset_index()
+    df_div.columns = ["Year", "Dividend Income"]
+    if df_div["Dividend Income"].sum() > 0:
+        st.subheader("Annual Dividend Income (Cash Paid Out — non-DRIP positions)")
         fig_div = px.bar(
-            df_div[df_div["Year"] > 0],
+            df_div,
             x="Year",
-            y="Annual Dividend Income",
+            y="Dividend Income",
             color_discrete_sequence=["#2ecc71"],
-            labels={"Annual Dividend Income": "Dividend Income ($)"},
+            labels={"Dividend Income": "Dividend Income ($)", "Year": "Calendar Year"},
         )
         fig_div.update_layout(
             height=260,
@@ -267,7 +328,29 @@ with tab_portfolio:
             yaxis_tickprefix="$",
             yaxis_tickformat=",.0f",
         )
+        fig_div.update_traces(
+            hovertemplate="Year %{x}<br>$%{y:,.0f}<extra></extra>"
+        )
         st.plotly_chart(fig_div, use_container_width=True)
+
+    # Year-end balance table
+    st.subheader("Year-End Balance Table")
+    df_table = df_total.copy()
+    df_table["Portfolio Value ($)"] = df_table["Portfolio Value"].map("${:,.0f}".format)
+    df_table["Growth vs Today"] = (df_table["Portfolio Value"] - current_total).map(
+        lambda x: f"+${x:,.0f}" if x >= 0 else f"-${abs(x):,.0f}"
+    )
+    df_table["Year"] = df_table["Year"].astype(str)
+    # Highlight retirement year
+    df_table[""] = df_table["Year"].apply(
+        lambda y: "🎯 Retirement" if int(y) == retirement_year else ""
+    )
+    st.dataframe(
+        df_table[["Year", "Portfolio Value ($)", "Growth vs Today", ""]],
+        hide_index=True,
+        use_container_width=True,
+        height=min(400, (len(df_table) + 1) * 35 + 10),
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -275,60 +358,71 @@ with tab_portfolio:
 # ════════════════════════════════════════════════════════════════════════════
 
 with tab_accounts:
-    df_by_acct = df_all.groupby(["year", "account_name"])["value"].sum().reset_index()
-    df_by_acct.columns = ["Year", "Account", "Value"]
+    df_acct = (
+        df_all.groupby(["cal_year", "account_name"])["dec31_value"]
+        .sum()
+        .reset_index()
+        .rename(columns={"cal_year": "Year", "account_name": "Account", "dec31_value": "Value"})
+    )
 
     fig_acct = px.line(
-        df_by_acct,
+        df_acct,
         x="Year",
         y="Value",
         color="Account",
-        labels={"Value": "Projected Value ($)", "Year": "Years from Today"},
-        markers=False,
+        markers=True,
         color_discrete_sequence=px.colors.qualitative.Set2,
+        labels={"Value": "Portfolio Value ($)", "Year": "Calendar Year"},
     )
+    if ret_value:
+        fig_acct.add_vline(
+            x=retirement_year,
+            line_dash="dash",
+            line_color="#e74c3c",
+            annotation_text=f"Retirement {retirement_year}",
+        )
     fig_acct.update_layout(
         height=420,
-        margin=dict(t=20, b=20),
+        margin=dict(t=20, b=30),
         yaxis_tickprefix="$",
         yaxis_tickformat=",.0f",
-        legend=dict(orientation="h", y=-0.15),
+        legend=dict(orientation="h", y=-0.2),
     )
+    fig_acct.update_traces(hovertemplate="Dec 31, %{x}<br>$%{y:,.0f}<extra></extra>")
     st.plotly_chart(fig_acct, use_container_width=True)
 
-    # Milestone table per account
-    st.subheader("Projected Value at Milestone Years")
-    milestone_yrs = [y for y in MILESTONE_YEARS if y <= horizon]
-    pivot = df_by_acct[df_by_acct["Year"].isin([0] + milestone_yrs)].copy()
-    pivot = pivot.pivot(index="Account", columns="Year", values="Value").reset_index()
-    pivot.columns.name = None
-
-    fmt_cols = [c for c in pivot.columns if c != "Account"]
-    for c in fmt_cols:
-        pivot[c] = pivot[c].map("${:,.0f}".format)
-    pivot = pivot.rename(columns={0: "Today"})
-    pivot = pivot.rename(columns={y: f"Year {y}" for y in milestone_yrs})
-
-    st.dataframe(pivot, hide_index=True, use_container_width=True)
-
-    # Stacked area by account
-    st.subheader("Stacked Growth by Account")
+    # Stacked area
     fig_stack = px.area(
-        df_by_acct,
+        df_acct,
         x="Year",
         y="Value",
         color="Account",
-        labels={"Value": "Projected Value ($)", "Year": "Years from Today"},
         color_discrete_sequence=px.colors.qualitative.Set2,
+        labels={"Value": "Portfolio Value ($)", "Year": "Calendar Year"},
     )
     fig_stack.update_layout(
-        height=380,
-        margin=dict(t=10, b=20),
+        height=360,
+        margin=dict(t=10, b=30),
         yaxis_tickprefix="$",
         yaxis_tickformat=",.0f",
-        legend=dict(orientation="h", y=-0.15),
+        legend=dict(orientation="h", y=-0.2),
     )
     st.plotly_chart(fig_stack, use_container_width=True)
+
+    # Milestone pivot table
+    st.subheader("Projected Balance at Milestone Years")
+    milestone_cal_yrs = sorted(set(
+        [current_year + m for m in MILESTONE_YEARS if current_year + m <= retirement_year]
+        + [retirement_year]
+    ))
+    pivot = df_acct[df_acct["Year"].isin(milestone_cal_yrs)].copy()
+    pivot = pivot.pivot(index="Account", columns="Year", values="Value").reset_index()
+    pivot.columns.name = None
+    for c in pivot.columns:
+        if c != "Account":
+            pivot[c] = pivot[c].map(lambda v: f"${v:,.0f}" if pd.notna(v) else "—")
+    pivot = pivot.rename(columns={retirement_year: f"{retirement_year} 🎯"})
+    st.dataframe(pivot, hide_index=True, use_container_width=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -336,71 +430,83 @@ with tab_accounts:
 # ════════════════════════════════════════════════════════════════════════════
 
 with tab_detail:
-    # Account filter
     account_names = sorted(df_all["account_name"].unique())
     selected_accounts = st.multiselect(
-        "Filter by account",
-        account_names,
-        default=account_names,
+        "Filter by account", account_names, default=account_names
     )
     df_filtered = df_all[df_all["account_name"].isin(selected_accounts)]
 
-    # Line chart — one line per ticker
-    df_ticker = df_filtered.groupby(["year", "ticker", "account_name"])["value"].sum().reset_index()
+    # Per-ticker line chart
+    df_ticker = (
+        df_filtered.groupby(["cal_year", "ticker", "account_name"])["dec31_value"]
+        .sum()
+        .reset_index()
+    )
     df_ticker["label"] = df_ticker["ticker"] + " (" + df_ticker["account_name"] + ")"
 
-    fig_tickers = px.line(
+    fig_tick = px.line(
         df_ticker,
-        x="year",
-        y="value",
+        x="cal_year",
+        y="dec31_value",
         color="label",
-        labels={"value": "Projected Value ($)", "year": "Years from Today", "label": "Position"},
-        markers=False,
+        markers=True,
+        labels={"dec31_value": "Value ($)", "cal_year": "Calendar Year", "label": "Position"},
         color_discrete_sequence=px.colors.qualitative.Alphabet,
     )
-    fig_tickers.update_layout(
-        height=420,
-        margin=dict(t=20, b=20),
+    if ret_value:
+        fig_tick.add_vline(
+            x=retirement_year,
+            line_dash="dash",
+            line_color="#e74c3c",
+            annotation_text=f"Retirement {retirement_year}",
+        )
+    fig_tick.update_layout(
+        height=440,
+        margin=dict(t=20, b=40),
         yaxis_tickprefix="$",
         yaxis_tickformat=",.0f",
-        legend=dict(orientation="h", y=-0.25, font=dict(size=11)),
+        legend=dict(orientation="h", y=-0.3, font=dict(size=10)),
     )
-    st.plotly_chart(fig_tickers, use_container_width=True)
+    fig_tick.update_traces(hovertemplate="Dec 31, %{x}<br>$%{y:,.0f}<extra></extra>")
+    st.plotly_chart(fig_tick, use_container_width=True)
 
-    st.divider()
-    st.subheader("Detail Table — Projected Value at Milestone Years")
+    # Detail table — per holding, milestone year columns
+    st.subheader("Position Detail — Dec 31 Balance at Milestone Years")
+    milestone_cal_yrs = sorted(set(
+        [current_year + m for m in MILESTONE_YEARS if current_year + m <= retirement_year]
+        + [retirement_year]
+    ))
 
-    # Build milestone table per ticker
-    milestone_yrs = [y for y in MILESTONE_YEARS if y <= horizon]
     detail_rows = []
     for h in all_holdings:
         acct = account_map.get(h["account_id"], {})
         if acct.get("name") not in selected_accounts:
             continue
-        val, price = current_holding_value(h, stock_prices, crypto_prices)
+        val, price = current_holding_value(h)
         if val <= 0:
             continue
-        proj = project_holding(h, val, price, max(milestone_yrs))
-        proj_map = {r["year"]: r for r in proj}
 
-        reinvest = bool(h.get("reinvest_dividends", False))
+        proj = project_by_calendar_year(h, val, price, cal_years)
+        proj_map = {r["cal_year"]: r for r in proj}
+
         payments = FREQ_TO_PAYMENTS.get(h.get("dividend_frequency", "Annual"), 0)
         annual_div = (h.get("dividend_per_unit") or 0) * payments * (h.get("quantity") or 0)
+        reinvest = bool(h.get("reinvest_dividends", False))
 
         row = {
             "Account": acct.get("name", ""),
             "Ticker": h["ticker"],
             "Type": h["asset_type"],
-            "Current Value": f"${val:,.2f}",
-            "Growth Rate": f"{h.get('annual_growth_rate') or 0:.1f}%",
-            "Annual Div ($)": f"${annual_div:,.2f}" if annual_div else "—",
+            "Today": f"${val:,.0f}",
+            "Growth %": f"{h.get('annual_growth_rate') or 0:.1f}%",
+            "Ann. Div": f"${annual_div:,.2f}" if annual_div else "—",
             "DRIP": "Yes" if reinvest else "No",
         }
-        for yr in milestone_yrs:
-            if yr in proj_map:
-                row[f"Yr {yr}"] = f"${proj_map[yr]['value']:,.0f}"
-            else:
-                row[f"Yr {yr}"] = "—"
+        for yr in milestone_cal_yrs:
+            label = f"{yr} 🎯" if yr == retirement_year else str(yr)
+            row[label] = (
+                f"${proj_map[yr]['dec31_value']:,.0f}" if yr in proj_map else "—"
+            )
         detail_rows.append(row)
 
     if detail_rows:
@@ -410,4 +516,4 @@ with tab_detail:
             use_container_width=True,
         )
     else:
-        st.info("No positions with projectable values in the selected accounts.")
+        st.info("No projectable positions in the selected accounts.")

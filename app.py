@@ -190,6 +190,7 @@ enriched_assets, total_general_assets = compute_asset_values(assets)
 enriched_inv_accounts, total_investment = compute_investment_account_values(investment_accounts, all_holdings)
 total_assets = total_general_assets + total_investment
 total_liabilities = sum(l["remaining_balance"] for l in liabilities)
+# Net worth includes all assets; investment portfolio is shown separately (not netted)
 net_worth = total_assets - total_liabilities
 
 # Save daily snapshot
@@ -197,21 +198,36 @@ db.save_net_worth_snapshot(total_assets, total_liabilities)
 
 # ── Top KPI row ───────────────────────────────────────────────────────────────
 
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("Total Assets", f"${total_assets:,.0f}")
-k2.metric("Total Liabilities", f"${total_liabilities:,.0f}")
-k3.metric(
-    "Net Worth",
-    f"${net_worth:,.0f}",
-    delta=None,
-)
-
 active_income = [s for s in income_sources if s["is_active"]]
 monthly_income = sum(
     s["amount"] * FREQUENCY_TO_MONTHLY.get(s["frequency"], 1)
     for s in active_income
 )
-k4.metric("Monthly Income", f"${monthly_income:,.0f}")
+
+k1, k2, k3, k4, k5 = st.columns(5)
+k1.metric("General Assets", f"${total_general_assets:,.0f}")
+k2.metric("Investment Portfolio", f"${total_investment:,.0f}")
+k3.metric("Total Liabilities", f"${total_liabilities:,.0f}")
+k4.metric("Net Worth", f"${net_worth:,.0f}")
+k5.metric("Monthly Income", f"${monthly_income:,.0f}")
+
+# Retirement date callout
+retirement_str = db.get_setting("retirement_date")
+if retirement_str:
+    from datetime import date as _date
+    try:
+        r_date = _date.fromisoformat(retirement_str)
+        today = _date.today()
+        years_left = (r_date - today).days / 365.25
+        if years_left > 0:
+            st.info(
+                f"Retirement target: **{r_date.strftime('%B %d, %Y')}**  "
+                f"— {years_left:.1f} years away  |  "
+                f"Investment portfolio at retirement (no growth assumed): "
+                f"**${total_investment:,.0f}**"
+            )
+    except ValueError:
+        pass
 
 st.divider()
 
