@@ -283,7 +283,7 @@ with tab_portfolio:
     # Area chart
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=df_total["Year"].astype(str),
+        x=df_total["Year"],
         y=df_total["Portfolio Value"],
         fill="tozeroy",
         line=dict(color="#3498db", width=2.5),
@@ -294,7 +294,7 @@ with tab_portfolio:
     # Retirement marker
     if ret_value:
         fig.add_vline(
-            x=str(retirement_year),
+            x=retirement_year,
             line_dash="dash",
             line_color="#e74c3c",
             annotation_text=f"Retirement {retirement_year}",
@@ -340,11 +340,10 @@ with tab_portfolio:
     df_table["Growth vs Today"] = (df_table["Portfolio Value"] - current_total).map(
         lambda x: f"+${x:,.0f}" if x >= 0 else f"-${abs(x):,.0f}"
     )
-    df_table["Year"] = df_table["Year"].astype(str)
-    # Highlight retirement year
     df_table[""] = df_table["Year"].apply(
-        lambda y: "🎯 Retirement" if int(y) == retirement_year else ""
+        lambda y: "🎯 Retirement" if y == retirement_year else ""
     )
+    df_table["Year"] = df_table["Year"].astype(str)
     st.dataframe(
         df_table[["Year", "Portfolio Value ($)", "Growth vs Today", ""]],
         hide_index=True,
