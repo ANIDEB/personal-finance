@@ -187,14 +187,29 @@ def holding_form(account_id, prefill=None, form_key="add_holding"):
                 step=0.0001,
                 format="%.4f",
             )
-        cost_basis = st.number_input(
-            "Cost Basis per Share ($)  —  optional",
-            min_value=0.0,
-            value=float(defaults.get("cost_basis") or 0),
-            step=0.01,
-            format="%.4f",
-            help="Your average purchase price per share. Used to calculate unrealised gain/loss.",
-        )
+        cb_col, cv_col = st.columns(2)
+        with cb_col:
+            cost_basis = st.number_input(
+                "Cost Basis per Share ($)  —  optional",
+                min_value=0.0,
+                value=float(defaults.get("cost_basis") or 0),
+                step=0.01,
+                format="%.4f",
+                help="Your average purchase price per share. Used to calculate unrealised gain/loss only.",
+            )
+        with cv_col:
+            current_value = st.number_input(
+                "Current Market Value ($)  —  optional override",
+                min_value=0.0,
+                value=float(defaults.get("current_value") or 0),
+                step=100.0,
+                format="%.2f",
+                help=(
+                    "Total current value of this position. "
+                    "Use this for mutual funds or 401k holdings where live prices "
+                    "are not available. Overrides live price × quantity for projections."
+                ),
+            )
 
         st.markdown("**Growth & Income Assumptions**")
         ga, gb, gc, gd = st.columns(4)
@@ -252,6 +267,7 @@ def holding_form(account_id, prefill=None, form_key="add_holding"):
             asset_type=asset_type,
             quantity=quantity,
             cost_basis=cost_basis if cost_basis > 0 else None,
+            current_value=current_value if current_value > 0 else None,
             annual_growth_rate=annual_growth_rate,
             dividend_per_unit=dividend_per_unit,
             dividend_frequency=dividend_frequency,
@@ -527,6 +543,7 @@ with tab_investment:
                                         asset_type=edit_result["asset_type"],
                                         quantity=edit_result["quantity"],
                                         cost_basis=edit_result["cost_basis"],
+                                        current_value=edit_result["current_value"],
                                         annual_growth_rate=edit_result["annual_growth_rate"],
                                         dividend_per_unit=edit_result["dividend_per_unit"],
                                         dividend_frequency=edit_result["dividend_frequency"],

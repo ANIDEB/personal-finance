@@ -120,19 +120,36 @@ account_map = {a["id"]: a for a in accounts}
 # ── Projection helpers ────────────────────────────────────────────────────────
 
 def current_holding_value(h):
+    """
+    Return (current_value, live_price) for a holding.
+
+    Priority:
+      1. Live price × quantity  (yfinance / CoinGecko)
+      2. Manual current_value override entered by user
+      3. Not projectable → returns (0.0, None)
+
+    Cost basis is intentionally NOT used here — it's only for gain/loss.
+    """
     ticker = h["ticker"].upper()
     qty = h.get("quantity") or 0
     price = None
+
     if h["asset_type"] in ("Stock/ETF", "Mutual Fund"):
         price = stock_prices.get(ticker, {}).get("price")
     elif h["asset_type"] == "Crypto":
         coin_id = md.CRYPTO_ID_MAP.get(ticker, ticker.lower())
         price = crypto_prices.get(coin_id, {}).get("price_usd")
+
     if price and qty:
         return price * qty, price
-    if h.get("cost_basis") and qty:
-        return h["cost_basis"] * qty, h["cost_basis"]
-    return 0.0, price
+
+    # Fallback: user-entered current market value override
+    manual_val = h.get("current_value")
+    if manual_val and manual_val > 0:
+        implied_price = manual_val / qty if qty else None
+        return manual_val, implied_price
+
+    return 0.0, None
 
 
 def project_by_calendar_year(h, current_value, live_price, cal_years):
@@ -221,10 +238,28 @@ for h in all_holdings:
     })
 
 if not all_proj_rows:
-    st.warning("No projectable positions found. Ensure positions have a live price or cost basis.")
+    st.warning("No projectable positions found. Add a Current Market Value to your holdings on the Assets page.")
     st.stop()
 
 df_all = pd.DataFrame(all_proj_rows)
+
+# Warn about any holdings that couldn't be valued
+excluded = []
+for h in all_holdings:
+    val, _ = current_holding_value(h)
+    if val <= 0:
+        acct = account_map.get(h["account_id"], {})
+        excluded.append(f"`{h['ticker']}` in {acct.get('name', '?')}")
+
+if excluded:
+    with st.expander(f"⚠️ {len(excluded)} holding(s) excluded from projections — no live price or current value", expanded=True):
+        st.markdown(
+            "These positions are **not included** in projections because yfinance could not "
+            "return a live price and no **Current Market Value** has been set.\n\n"
+            "To include them: go to **Assets → Investment Accounts**, edit each holding, "
+            "and enter the **Current Market Value ($)**.\n\n"
+            + "  \n".join(f"• {e}" for e in excluded)
+        )
 
 # Current total = holdings market value + cash balances in all accounts
 # (matches the Investment Portfolio KPI on the home page)
