@@ -107,6 +107,49 @@ def compute_asset_values(assets):
     return enriched, total
 
 
+def compute_investment_account_values(accounts, all_holdings):
+    """
+    Return (enriched_accounts, total_value).
+    Each account dict gains a 'total_value' key computed from live prices.
+    """
+    stock_tickers = tuple(
+        h["ticker"].upper()
+        for h in all_holdings
+        if h["asset_type"] in ("Stock/ETF", "Mutual Fund")
+    )
+    crypto_symbols = [
+        h["ticker"].upper()
+        for h in all_holdings
+        if h["asset_type"] == "Crypto"
+    ]
+    crypto_ids = tuple(md.CRYPTO_ID_MAP.get(s, s.lower()) for s in crypto_symbols)
+
+    stock_prices = cached_stock_prices(stock_tickers) if stock_tickers else {}
+    crypto_prices = cached_crypto_prices(crypto_ids) if crypto_ids else {}
+
+    account_totals = {a["id"]: 0.0 for a in accounts}
+    for h in all_holdings:
+        ticker = h["ticker"].upper()
+        qty = h.get("quantity") or 0
+        price = None
+        if h["asset_type"] in ("Stock/ETF", "Mutual Fund"):
+            price = stock_prices.get(ticker, {}).get("price")
+        elif h["asset_type"] == "Crypto":
+            coin_id = md.CRYPTO_ID_MAP.get(ticker, ticker.lower())
+            price = crypto_prices.get(coin_id, {}).get("price_usd")
+        val = (price * qty) if price and qty else 0.0
+        account_totals[h["account_id"]] = account_totals.get(h["account_id"], 0.0) + val
+
+    enriched = []
+    total = 0.0
+    for a in accounts:
+        a = dict(a)
+        a["total_value"] = account_totals.get(a["id"], 0.0)
+        total += a["total_value"]
+        enriched.append(a)
+    return enriched, total
+
+
 def monthly_income_projection(income_sources, months=24):
     """Return a list of (year_month_label, amount) for the next `months` months."""
     today = date.today()
@@ -138,8 +181,12 @@ st.caption(f"Last refreshed: {datetime.now().strftime('%B %d, %Y  %H:%M')}")
 assets = db.get_all_assets()
 liabilities = db.get_all_liabilities()
 income_sources = db.get_all_income_sources()
+investment_accounts = db.get_all_investment_accounts()
+all_holdings = db.get_all_holdings()
 
-enriched_assets, total_assets = compute_asset_values(assets)
+enriched_assets, total_general_assets = compute_asset_values(assets)
+enriched_inv_accounts, total_investment = compute_investment_account_values(investment_accounts, all_holdings)
+total_assets = total_general_assets + total_investment
 total_liabilities = sum(l["remaining_balance"] for l in liabilities)
 net_worth = total_assets - total_liabilities
 
@@ -172,12 +219,20 @@ col_left, col_right = st.columns(2)
 
 with col_left:
     st.subheader("Asset Allocation")
-    if enriched_assets:
-        df_assets = pd.DataFrame(enriched_assets)
-        cat_totals = df_assets.groupby("category")["effective_value"].sum().reset_index()
-        cat_totals.columns = ["Category", "Value"]
+    allocation: dict[str, float] = {}
+    # General assets by category
+    for a in enriched_assets:
+        allocation[a["category"]] = allocation.get(a["category"], 0.0) + a["effective_value"]
+    # Investment accounts by account type
+    for acct in enriched_inv_accounts:
+        if acct["total_value"] > 0:
+            label = acct["account_type"]
+            allocation[label] = allocation.get(label, 0.0) + acct["total_value"]
+
+    if allocation:
+        df_alloc = pd.DataFrame(allocation.items(), columns=["Category", "Value"])
         fig = px.pie(
-            cat_totals,
+            df_alloc,
             names="Category",
             values="Value",
             hole=0.45,

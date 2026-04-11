@@ -9,6 +9,7 @@ def get_connection():
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -82,6 +83,33 @@ def initialize_db():
             total_assets REAL NOT NULL DEFAULT 0,
             total_liabilities REAL NOT NULL DEFAULT 0,
             net_worth REAL NOT NULL DEFAULT 0
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS investment_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            institution TEXT,
+            account_type TEXT NOT NULL,
+            currency TEXT DEFAULT 'USD',
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS investment_holdings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL REFERENCES investment_accounts(id) ON DELETE CASCADE,
+            ticker TEXT NOT NULL,
+            asset_type TEXT NOT NULL DEFAULT 'Stock/ETF',
+            quantity REAL NOT NULL DEFAULT 0,
+            cost_basis REAL,
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -270,3 +298,94 @@ def get_net_worth_history(days=365):
     ).fetchall()
     conn.close()
     return [dict(r) for r in reversed(rows)]
+
+
+# ── Investment Accounts ───────────────────────────────────────────────────────
+
+def get_all_investment_accounts():
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM investment_accounts ORDER BY institution, name"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_investment_account(name, institution, account_type, currency="USD", notes=""):
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO investment_accounts (name, institution, account_type, currency, notes)
+           VALUES (?, ?, ?, ?, ?)""",
+        (name, institution or None, account_type, currency, notes),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_investment_account(account_id, name, institution, account_type, currency="USD", notes=""):
+    conn = get_connection()
+    conn.execute(
+        """UPDATE investment_accounts SET name=?, institution=?, account_type=?,
+           currency=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+        (name, institution or None, account_type, currency, notes, account_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_investment_account(account_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM investment_accounts WHERE id=?", (account_id,))
+    conn.commit()
+    conn.close()
+
+
+# ── Investment Holdings ───────────────────────────────────────────────────────
+
+def get_all_holdings():
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM investment_holdings ORDER BY account_id, ticker"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_holdings_for_account(account_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM investment_holdings WHERE account_id=? ORDER BY ticker",
+        (account_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_holding(account_id, ticker, asset_type, quantity, cost_basis=None, notes=""):
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO investment_holdings
+           (account_id, ticker, asset_type, quantity, cost_basis, notes)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (account_id, ticker.upper(), asset_type, quantity, cost_basis or None, notes),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_holding(holding_id, ticker, asset_type, quantity, cost_basis=None, notes=""):
+    conn = get_connection()
+    conn.execute(
+        """UPDATE investment_holdings SET ticker=?, asset_type=?, quantity=?,
+           cost_basis=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+        (ticker.upper(), asset_type, quantity, cost_basis or None, notes, holding_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_holding(holding_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM investment_holdings WHERE id=?", (holding_id,))
+    conn.commit()
+    conn.close()
