@@ -226,8 +226,11 @@ if not all_proj_rows:
 
 df_all = pd.DataFrame(all_proj_rows)
 
-# Current total
-current_total = sum(r["dec31_value"] for r in today_rows)
+# Current total = holdings market value + cash balances in all accounts
+# (matches the Investment Portfolio KPI on the home page)
+total_holdings_value = sum(r["dec31_value"] for r in today_rows)
+total_account_cash = sum(float(a.get("cash_balance") or 0) for a in accounts)
+current_total = total_holdings_value + total_account_cash
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
@@ -255,7 +258,14 @@ with tab_portfolio:
 
     # KPI row
     k1, k2, k3 = st.columns(3)
-    k1.metric("Current Portfolio", f"${current_total:,.0f}")
+    k1.metric(
+        "Current Portfolio",
+        f"${current_total:,.0f}",
+        help=(
+            f"Holdings: ${total_holdings_value:,.0f}  +  "
+            f"Cash in accounts: ${total_account_cash:,.0f}"
+        ),
+    )
     if ret_value:
         k2.metric(
             f"At Retirement ({retirement_year})",
