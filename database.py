@@ -120,6 +120,19 @@ def initialize_db():
     except sqlite3.OperationalError:
         pass  # column already exists
 
+    # Migration: add projection fields to investment_holdings
+    for col_sql in [
+        "ALTER TABLE investment_holdings ADD COLUMN annual_growth_rate REAL DEFAULT 0",
+        "ALTER TABLE investment_holdings ADD COLUMN dividend_per_unit REAL DEFAULT 0",
+        "ALTER TABLE investment_holdings ADD COLUMN dividend_frequency TEXT DEFAULT 'Annual'",
+        "ALTER TABLE investment_holdings ADD COLUMN reinvest_dividends INTEGER DEFAULT 0",
+    ]:
+        try:
+            c.execute(col_sql)
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
     conn.commit()
     conn.close()
 
@@ -369,24 +382,35 @@ def get_holdings_for_account(account_id):
     return [dict(r) for r in rows]
 
 
-def add_holding(account_id, ticker, asset_type, quantity, cost_basis=None, notes=""):
+def add_holding(account_id, ticker, asset_type, quantity, cost_basis=None, notes="",
+                annual_growth_rate=0.0, dividend_per_unit=0.0,
+                dividend_frequency="Annual", reinvest_dividends=False):
     conn = get_connection()
     conn.execute(
         """INSERT INTO investment_holdings
-           (account_id, ticker, asset_type, quantity, cost_basis, notes)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (account_id, ticker.upper(), asset_type, quantity, cost_basis or None, notes),
+           (account_id, ticker, asset_type, quantity, cost_basis, notes,
+            annual_growth_rate, dividend_per_unit, dividend_frequency, reinvest_dividends)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (account_id, ticker.upper(), asset_type, quantity, cost_basis or None, notes,
+         annual_growth_rate or 0.0, dividend_per_unit or 0.0,
+         dividend_frequency, 1 if reinvest_dividends else 0),
     )
     conn.commit()
     conn.close()
 
 
-def update_holding(holding_id, ticker, asset_type, quantity, cost_basis=None, notes=""):
+def update_holding(holding_id, ticker, asset_type, quantity, cost_basis=None, notes="",
+                   annual_growth_rate=0.0, dividend_per_unit=0.0,
+                   dividend_frequency="Annual", reinvest_dividends=False):
     conn = get_connection()
     conn.execute(
         """UPDATE investment_holdings SET ticker=?, asset_type=?, quantity=?,
-           cost_basis=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-        (ticker.upper(), asset_type, quantity, cost_basis or None, notes, holding_id),
+           cost_basis=?, notes=?, annual_growth_rate=?, dividend_per_unit=?,
+           dividend_frequency=?, reinvest_dividends=?,
+           updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+        (ticker.upper(), asset_type, quantity, cost_basis or None, notes,
+         annual_growth_rate or 0.0, dividend_per_unit or 0.0,
+         dividend_frequency, 1 if reinvest_dividends else 0, holding_id),
     )
     conn.commit()
     conn.close()

@@ -35,6 +35,7 @@ ACCOUNT_TYPES = [
 ]
 
 HOLDING_TYPES = ["Stock/ETF", "Mutual Fund", "Crypto"]
+DIVIDEND_FREQUENCIES = ["None", "Monthly", "Quarterly", "Semi-Annual", "Annual"]
 
 CURRENCIES = ["USD", "EUR", "GBP", "JPY", "INR", "CAD", "AUD", "CHF", "CNY"]
 
@@ -194,6 +195,47 @@ def holding_form(account_id, prefill=None, form_key="add_holding"):
             format="%.4f",
             help="Your average purchase price per share. Used to calculate unrealised gain/loss.",
         )
+
+        st.markdown("**Growth & Income Assumptions**")
+        ga, gb, gc, gd = st.columns(4)
+        with ga:
+            annual_growth_rate = st.number_input(
+                "Annual Growth Rate (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(defaults.get("annual_growth_rate") or 0),
+                step=0.5,
+                format="%.2f",
+                help="Expected annual price appreciation (e.g. 7 for 7%).",
+            )
+        with gb:
+            dividend_per_unit = st.number_input(
+                "Dividend per Share ($)",
+                min_value=0.0,
+                value=float(defaults.get("dividend_per_unit") or 0),
+                step=0.01,
+                format="%.4f",
+                help="Dividend paid per share per payment period.",
+            )
+        with gc:
+            div_freq_default = defaults.get("dividend_frequency", "Annual")
+            div_freq_idx = (
+                DIVIDEND_FREQUENCIES.index(div_freq_default)
+                if div_freq_default in DIVIDEND_FREQUENCIES else 4
+            )
+            dividend_frequency = st.selectbox(
+                "Dividend Frequency",
+                DIVIDEND_FREQUENCIES,
+                index=div_freq_idx,
+            )
+        with gd:
+            st.write("")
+            st.write("")
+            reinvest_dividends = st.checkbox(
+                "Reinvest Dividends (DRIP)",
+                value=bool(defaults.get("reinvest_dividends", False)),
+            )
+
         notes = st.text_area("Notes", value=defaults.get("notes") or "", height=60)
         submitted = st.form_submit_button("Save Position", type="primary", use_container_width=True)
 
@@ -210,6 +252,10 @@ def holding_form(account_id, prefill=None, form_key="add_holding"):
             asset_type=asset_type,
             quantity=quantity,
             cost_basis=cost_basis if cost_basis > 0 else None,
+            annual_growth_rate=annual_growth_rate,
+            dividend_per_unit=dividend_per_unit,
+            dividend_frequency=dividend_frequency,
+            reinvest_dividends=reinvest_dividends,
             notes=notes,
         )
     return None
@@ -481,6 +527,10 @@ with tab_investment:
                                         asset_type=edit_result["asset_type"],
                                         quantity=edit_result["quantity"],
                                         cost_basis=edit_result["cost_basis"],
+                                        annual_growth_rate=edit_result["annual_growth_rate"],
+                                        dividend_per_unit=edit_result["dividend_per_unit"],
+                                        dividend_frequency=edit_result["dividend_frequency"],
+                                        reinvest_dividends=edit_result["reinvest_dividends"],
                                         notes=edit_result["notes"],
                                     )
                                     del st.session_state[f"editing_holding_{h_row['id']}"]
