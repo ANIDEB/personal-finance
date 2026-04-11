@@ -144,7 +144,9 @@ def compute_investment_account_values(accounts, all_holdings):
     total = 0.0
     for a in accounts:
         a = dict(a)
-        a["total_value"] = account_totals.get(a["id"], 0.0)
+        holdings_value = account_totals.get(a["id"], 0.0)
+        cash = a.get("cash_balance") or 0.0
+        a["total_value"] = holdings_value + cash
         total += a["total_value"]
         enriched.append(a)
     return enriched, total

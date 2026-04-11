@@ -123,7 +123,7 @@ def account_form(prefill=None, form_key="add_account"):
         with col2:
             institution = st.text_input("Institution", value=defaults.get("institution") or "",
                                          placeholder="e.g. Fidelity, Schwab, Coinbase")
-        col3, col4 = st.columns(2)
+        col3, col4, col5 = st.columns(3)
         with col3:
             account_type = st.selectbox(
                 "Account Type *",
@@ -138,6 +138,15 @@ def account_form(prefill=None, form_key="add_account"):
                 index=CURRENCIES.index(defaults["currency"])
                 if defaults.get("currency") in CURRENCIES else 0,
             )
+        with col5:
+            cash_balance = st.number_input(
+                "Cash Balance ($)",
+                min_value=0.0,
+                value=float(defaults.get("cash_balance") or 0),
+                step=100.0,
+                format="%.2f",
+                help="Uninvested cash sitting in this account (e.g. settlement funds, money market).",
+            )
         notes = st.text_area("Notes", value=defaults.get("notes") or "", height=70)
         submitted = st.form_submit_button("Save Account", type="primary", use_container_width=True)
 
@@ -146,7 +155,7 @@ def account_form(prefill=None, form_key="add_account"):
             st.error("Account name is required.")
             return None
         return dict(name=name, institution=institution, account_type=account_type,
-                    currency=currency, notes=notes)
+                    currency=currency, cash_balance=cash_balance, notes=notes)
     return None
 
 
@@ -324,8 +333,10 @@ with tab_investment:
     stock_prices = cached_stock_prices(stock_tickers) if stock_tickers else {}
     crypto_prices = cached_crypto_prices(crypto_ids) if crypto_ids else {}
 
-    # Per-account value totals
-    account_totals: dict[int, float] = {a["id"]: 0.0 for a in accounts}
+    # Per-account value totals (holdings + cash)
+    account_totals: dict[int, float] = {
+        a["id"]: float(a.get("cash_balance") or 0.0) for a in accounts
+    }
     for h in all_holdings:
         _, val, _ = resolve_holding(h, stock_prices, crypto_prices)
         account_totals[h["account_id"]] = account_totals.get(h["account_id"], 0.0) + val
@@ -393,6 +404,10 @@ with tab_investment:
 
                     # ── Holdings table ────────────────────────────────────────
                     holdings = [h for h in all_holdings if h["account_id"] == acct["id"]]
+
+                    cash_bal = acct.get("cash_balance") or 0.0
+                    if cash_bal > 0:
+                        st.info(f"Cash / Settlement Funds: **${cash_bal:,.2f}**")
 
                     if holdings:
                         h_rows = []

@@ -113,6 +113,13 @@ def initialize_db():
         )
     """)
 
+    # Migration: add cash_balance to investment_accounts if it doesn't exist yet
+    try:
+        c.execute("ALTER TABLE investment_accounts ADD COLUMN cash_balance REAL DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
     conn.commit()
     conn.close()
 
@@ -311,23 +318,24 @@ def get_all_investment_accounts():
     return [dict(r) for r in rows]
 
 
-def add_investment_account(name, institution, account_type, currency="USD", notes=""):
+def add_investment_account(name, institution, account_type, currency="USD", notes="", cash_balance=0.0):
     conn = get_connection()
     conn.execute(
-        """INSERT INTO investment_accounts (name, institution, account_type, currency, notes)
-           VALUES (?, ?, ?, ?, ?)""",
-        (name, institution or None, account_type, currency, notes),
+        """INSERT INTO investment_accounts
+           (name, institution, account_type, currency, notes, cash_balance)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (name, institution or None, account_type, currency, notes, cash_balance or 0.0),
     )
     conn.commit()
     conn.close()
 
 
-def update_investment_account(account_id, name, institution, account_type, currency="USD", notes=""):
+def update_investment_account(account_id, name, institution, account_type, currency="USD", notes="", cash_balance=0.0):
     conn = get_connection()
     conn.execute(
         """UPDATE investment_accounts SET name=?, institution=?, account_type=?,
-           currency=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-        (name, institution or None, account_type, currency, notes, account_id),
+           currency=?, notes=?, cash_balance=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+        (name, institution or None, account_type, currency, notes, cash_balance or 0.0, account_id),
     )
     conn.commit()
     conn.close()
